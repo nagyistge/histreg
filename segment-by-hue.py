@@ -1,45 +1,13 @@
 #!/Users/inhuszar/MND_HistReg/MND_HistReg_Python/bin/python
 
+# Updates on 22 May, 2017
+    # The argexist, subarg and confirmed_to_proceed methods come from the external args.py
+    # The subarg methods returns a LIST(!) of all related entries. Even the default is return as a list!
+    # The TIFFs are saved in conventional format: (height, width, layers)
+    # -p argument can now recognise individual files and invalid paths
+
 import sys
-
-
-def argexist(argv, subarg=False):
-    try:
-        arg_idx = sys.argv.index(argv)
-
-        # If the argument takes a sub-argument whose existence needs to be validated:
-        if subarg:
-            if (len(sys.argv) - 1 > arg_idx) & (sys.argv[arg_idx + 1][0] != '-'):
-                return True
-            else:
-                sys.stderr.write("ERROR: Incorrect value for {} argument.\n".format(argv))
-                raise AssertionError("Command-line arguments incorrectly set.\n")
-        else:
-            return True
-    except ValueError as exp:
-        return False
-
-    return False
-
-
-def subarg(argv, default_value=""):
-    if argexist(argv, subarg=True):
-        return sys.argv[sys.argv.index(argv)+1]
-    else:
-        return default_value
-
-def confirmed_to_proceed():
-    yes = set(['yes', 'y', 'ye', ''])
-    no = set(['no', 'n'])
-
-    choice = raw_input().lower()
-    if choice in yes:
-        return True
-    elif choice in no:
-        return False
-    else:
-        sys.stdout.write("Please respond with 'yes' or 'no': ")
-        confirmed_to_proceed()
+from args import argexist, subarg
 
 
 def main():
@@ -52,19 +20,20 @@ def main():
     import time
     import datetime
     import tifffile as tiff
+    from args import argexist, subarg, confirmed_to_proceed
 
     ## Specify path
     #default_path = "/Volumes/INH_1TB/MND_HistReg_Scratch/NP140-14_dissection_photos/Cropped/Blocks/"
     default_path = os.getcwd()
     try:
-        FPATH = subarg('-p', default_path).split(',')
+        FPATH = subarg('-p', default_path)
     except AssertionError as exp:
         print("Fatal error. Program terminates.\n", exp)
         exit()
 
     ## Specify extensions
     try:
-        extlist = subarg('-e', "tif,tiff").split(',')
+        extlist = subarg('-e', "tif,tiff")
     except AssertionError as exp:
         print("Fatal error. Program terminates.\n", exp)
         exit()
@@ -72,7 +41,7 @@ def main():
 
     ## Specify the number of clusters
     try:
-        N_CLUSTERS = int(subarg('-c', 2))
+        N_CLUSTERS = int(subarg('-c', 2)[0])
     except AssertionError as exp:
         print("Fatal error. Program terminates.\n", exp)
         exit()
@@ -81,8 +50,8 @@ def main():
     MASKTAG = '_mask.tif'
     SEGTAG = '_seg.tif'
     savemask, applymask = True, False
-    if (argexist('-a')):
-        if (N_CLUSTERS == 2):
+    if argexist('-a'):
+        if N_CLUSTERS == 2:
             applymask = True
             if not argexist('-m'):
                 savemask = False
@@ -92,16 +61,30 @@ def main():
 
     imglist = []
     for fp in FPATH:
-        for path, subdirs, files in os.walk(fp, topdown=True):
-            if not argexist('-r'):
-                subdirs[:] = []
-            for file in files:
-                if (file[0] != '.') & (file.lower().endswith(EXTENSIONS)) & \
-                        (not file.lower().endswith(MASKTAG)) & \
-                        (not file.lower().endswith(SEGTAG)):
-                    imglist.append(os.path.join(path, file))
+        if os.path.isdir(fp):
+            for path, subdirs, files in os.walk(fp, topdown=True):
+                if not argexist('-r'):
+                    subdirs[:] = []
+                for file in files:
+                    if (file[0] != '.') & (file.lower().endswith(EXTENSIONS)) & \
+                            (not file.lower().endswith(MASKTAG)) & \
+                            (not file.lower().endswith(SEGTAG)):
+                        imglist.append(os.path.join(path, file))
 
-    print "\nFiles to be processed (excluding _seg and _mask files):"
+        elif os.path.isfile(fp):
+            fn = os.path.split(fp)[-1]
+            if (fn[0] != '.') & (fn.lower().endswith(EXTENSIONS)) & \
+                    (not fn.lower().endswith(MASKTAG)) & \
+                    (not fn.lower().endswith(SEGTAG)):
+                imglist.append(fp)
+        else:
+            print 'WARNING: Path {} could not be recognised.'.format(fp)
+
+    # Terminate application if no files are selected
+    if len(imglist) == 0:
+        print 'RESULT: No files were found with the current setting. The program terminates. Please change the search path or the inclusion/exclusion criteria and try again.'
+        exit()
+    print "\nFiles to be processed {} (excluding _seg and _mask files):".format(len(imglist))
     print "=======================================================\n"
     print "\n".join(imglist)
     print "\nWould you like to start the process? [yes/no]: "
@@ -137,13 +120,12 @@ def main():
 
         # Create output
         if savemask:
-            tiff.imsave(img[:-4] + MASKTAG, mask[np.newaxis, np.newaxis, np.newaxis, :, :].astype(np.uint8))
+            tiff.imsave(img[:-4] + MASKTAG, mask[:, :, np.newaxis].astype(np.uint8))
             print "Mask file saved as {}.".format(img.split(os.sep)[-1][:-4] + MASKTAG)
         if applymask:
             seg = np.copy(im)
             seg[mask==0] = 0
-            seg = np.rollaxis(seg, -1, 0).astype(np.uint8)
-            tiff.imsave(img[:-4] + SEGTAG, seg[np.newaxis, np.newaxis, :, :, :])
+            tiff.imsave(img[:-4] + SEGTAG, seg[:, :, :].astype(np.uint8))
             print "Segmented image saved as {}.".format(img.split(os.sep)[-1][:-4] + SEGTAG)
 
     end = timer()
@@ -166,6 +148,7 @@ if __name__ == '__main__':
                                     the default is the current working directory
             -r                      process files in subdirectories
             -e <ext1,ext2...>       file extensions to be included (as comma-separated list)
+                                    the default is tif,tiff
             
             -c <number>             number of segmentation clusters (default: 2)
             
