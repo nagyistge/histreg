@@ -10,7 +10,7 @@ import re
 import fnmatch
 from PIL import Image
 from math import sqrt, floor
-from exceptions import *
+from myexceptions import *
 from skimage.measure import label, regionprops
 from scipy.ndimage.morphology import distance_transform_edt
 import os
@@ -485,6 +485,7 @@ def main():
                     (not fn.lower().endswith(SMAPTAG)) & \
                     (not fn.lower().endswith(MASKTAG)) & \
                     (re.match(re.compile(PROBTAG + "[0-9][0-9]"), fn[-(2 + len(PROBTAG)):]) is None) & \
+                    # FIXME: the following two lines possibly incorrectly contain fp.
                     (any(fnmatch.fnmatch(fp, p) for p in INC)) & \
                     (not any(fnmatch.fnmatch(fp, p) for p in EXC)):
                 # Add local files with their full path, so that duplicates can be removed
@@ -532,6 +533,7 @@ def main():
 
     # Load what layers the user wants to be involved in the k-Means clustering
     # "layers" defaults to bgr, so that clusters will be ordered along the blue channel
+    # FIXME: The following line only returns the first element from a list of comma-seaparated layers.
     layers = subarg(CLFLAGS['dims'], 'bgr')[0]
     # layers = re.compile("[^a-zA-Z]").sub('', layers)  # remove any separators
 
@@ -691,3 +693,5 @@ if __name__ == "__main__":
     # Despite the larger file size, the TIFF format was chosen over PNG for floating-point type support.
     # The PIL Image Library was chosen over tifffile for multiple file-type support
     # A sampling map is always given for an individual image, not for a session, for later identification
+
+# FIXME: Make at least one argument necessary.
