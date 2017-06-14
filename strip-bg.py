@@ -12,6 +12,7 @@ import os
 from PIL import Image
 from sklearn.cluster import KMeans
 from scipy.ndimage.filters import median_filter
+from skimage import color
 
 # Command-line argument flags
 CLFLAGS = {'tiff': '--tif',
@@ -25,6 +26,7 @@ CLFLAGS = {'tiff': '--tif',
            'mask': '--mask',
            'median': '--median',
            'invert': '--inv',
+           'corner': '--corner',
            'segval': '-s',
            'format': '-f'}
 
@@ -142,6 +144,16 @@ def main():
                    'switch is used.'.format(CLFLAGS['median']))
             exit()
 
+    # Read corner constraint
+    try:
+        corner = int(subarg(CLFLAGS['corner'], '0')[0])
+        if (corner > 3) | (corner < 0):
+            raise ValueError
+    except:
+        err = err + 1
+        print ('Invalid corner constraint.')
+        exit()
+
     # Summarize task and insist on user confirmation before proceeding
     line = "\n{:d} file(s) will be processed:".format(len(imfilelist))
     print line
@@ -184,14 +196,17 @@ def main():
         lstack = img
         if ch != 1:
             try:
-                pilimg = Image.fromarray(img).convert('RGB')
+                # Ensuring that the starting point is indeed RGB
+                pilimg = Image.open(imfile)
+                rgbimg = np.array(Image.fromarray(img, pilimg.mode)
+                                  .convert('RGB'))
             except:
                 err = err + 1
                 print ('Colour space conversion failed for {}. The image was '
                        'skipped.')
                 continue
-            hsv = lambda: np.asarray(pilimg.convert('HSV'))
-            lab = lambda: np.asarray(pilimg.convert('LAB'))
+            hsv = lambda: np.asarray(color.rgb2hsv(rgbimg))
+            lab = lambda: np.asarray(color.rgb2lab(rgbimg))
 
             # Getter functions for the individual layers
             LAYERS = {LAYERIDS['red']: lambda: img[:, :, 0],
@@ -237,6 +252,21 @@ def main():
             mask = np.max(mask) - mask
         if argexist(CLFLAGS['median'], True):
             mask = median_filter(mask, medkernel)
+        if argexist(CLFLAGS['corner']):
+            if corner == 0:
+                watchpoint = mask[0,0]
+            elif corner == 1:
+                watchpoint = mask[0, w]
+            elif corner == 2:
+                watchpoint = mask[h, 0]
+            else:
+                watchpoint = mask[h, w]
+            if not watchpoint == 0:
+                current_label = mask[0,0]
+                tmplabel = np.max(mask) + 1
+                mask[mask == current_label] = tmplabel
+                mask[mask == 0] = current_label
+                mask[mask == tmplabel] = 0
         segmentation = np.copy(img)
         segmentation[np.in1d(mask, SEGVALS).reshape(mask.shape)] = 0
 
@@ -326,16 +356,18 @@ if __name__ == '__main__':
                                 (default: equal weights for all channels)
             -c                  Number of clusters (default: 2)
             --demean            Demean channel values
-                                (default: no)
+                                (default: off)
             --normvar           Normalise channel values by their variance
-                                (default: no)
+                                (default: off)
             --mask              Output the mask.
             --median <size>     Perform median filtering on the mask with fixed
-                                kernel size. (default: no filtering)
-            --inv               Invert the mask. (default: no)
-            -s <s1,s2...sn>     Mask values used for segmentation
-                                (default: 0)
-            --show              Show output on screen. (default: no)
-            --save              Save output to file. (default: no)
+                                kernel size. (default: off)
+            --inv               Invert the mask. (default: off)
+            --corner <c>        Forces the specified corner to be labeled with 
+                                zero. (0: Top-left 1: top-right, 2: bottom-left
+                                3: bottom-right) (default: off, 0 when on)
+            -s <s1,s2...sn>     Mask values used for segmentation (default: 0)
+            --show              Show output on screen. (default: off)
+            --save              Save output to file. (default: off)
             -f      <format>    Output file format. See above what is supported.
         """)
