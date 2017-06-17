@@ -19,6 +19,8 @@ CLFLAGS = {'ref': '--ref',
            'rgb': '--rgb',
            'apply': '--applyxfm',
            'initvals': '--initvals',
+           'bounds': '--bounds',
+           'steps': '--steps',
            'show': '--show',
            'out': '--out',
            'omat': '--omat',
@@ -245,6 +247,11 @@ def perform_registration(img, refimg, affine_param_bounds, init_steps=5,
         orig_y, orig_x = np.mean(np.vstack(np.where(ipols[0].values != 0)).T,
                                  axis=0)
 
+    # Adjust the affine parameter bounds to the current scale
+    affine_param_bounds = np.array(affine_param_bounds)
+    affine_param_bounds[1:3,:] = affine_param_bounds[1:3,:] / float(dscale)
+    affine_param_bounds = tuple([tuple(row) for row in affine_param_bounds])
+
     # Initialise registration
     if initvals is None:
         gridpts = tuple([np.linspace(affine_param_bounds[i][0],
@@ -255,6 +262,7 @@ def perform_registration(img, refimg, affine_param_bounds, init_steps=5,
         grid = np.vstack([grid[i].ravel() for i in range(len(grid))]).T
         initial_costs = []
         print 'Calculating initial guess...'
+        print 'Scaled parameter boundaries:', affine_param_bounds
         for x0 in grid:
             initial_costs.append(costfun(x0, img_ipol=ipols[0],
                                          refimg_ipol=ipols[1],
@@ -352,6 +360,7 @@ def main():
             exit()
 
     # Read initialisation values
+    initvals = None
     if argexist(CLFLAGS['initvals']):
         if argexist(CLFLAGS['initvals'], True):
             initvals = subarg(CLFLAGS['initvals'])
@@ -368,6 +377,41 @@ def main():
                 exit()
         else:
             print ('Initial affine parameters are not specified.')
+            exit()
+
+    # Read bounds
+    if argexist(CLFLAGS['bounds']):
+        if argexist(CLFLAGS['bounds'], True):
+            bnds = subarg(CLFLAGS['bounds'])
+            if len(bnds) != 2 * N_AFF_PARAMS:
+                print ('Invalid bounds for initial parameter search.')
+                exit()
+            try:
+                bnds[0] = bnds[0][1:]
+                bnds[-1] = bnds[-1][:-1]
+                bnds = [[float(bnds[2*i]), float(bnds[2*i+1])]
+                        for i in range(N_AFF_PARAMS)]
+            except:
+                print ('Invalid bounds for initial parameter search.')
+                exit()
+        else:
+            print ('Invalid bounds for initial parameter search.')
+            exit()
+    else:
+        h, w, ch = extract_shape(img)
+        bnds = [[-pi, pi], [-w/2, w/2], [-h/2, h/2], [0.8, 1.2]]
+
+    # Read grid search step count
+    if argexist(CLFLAGS['steps']):
+        if argexist(CLFLAGS['steps'], True):
+            steps = subarg(CLFLAGS['steps'])[0]
+            try:
+                steps = int(steps)
+            except:
+                print ('Invalid number of steps for initial grid search.')
+                exit()
+        else:
+            print ('Invalid number of steps for initial grid search.')
             exit()
 
     # Read output name
@@ -390,10 +434,9 @@ def main():
     # Do the job
     if mat is None:
         print ('REGISTRATION MODE active.')
-        bnds = ((-pi, pi), (-100, 100), (-100, 100), (0.8, 1.2))
         outimg, omat = perform_registration(img, refimg,
                                             affine_param_bounds=bnds,
-                                            init_steps=5, dscale=factor,
+                                            init_steps=steps, dscale=factor,
                                             initvals=initvals, verbose=verbose)
 
         if argexist(CLFLAGS['show']):
@@ -465,14 +508,17 @@ if __name__ == "__main__":
         ./register-img.py <input> --applyxfm <affine.mat> --out [output]
         
     Options:
-        --ds <factor>       Downsample images for better performance. Factor: px/mm.
-                            (Default: off. Recommended downsampling: 1mm/px)
-        --tif               Forces to use tifffile.py for the input and output.
-        --show              Show the output.
+        --rgb               Forces to use maximum 3 channels. (Use for RGBA.)
+        --ds <factor>       Downsample images for better performance. (px/mm)
+                            (Default: off. Recommended downsampling: to 1mm/px)
         --initvals          Manual initialisation of affine parameters. Use []!
           [rz,dx,dy,sxy]    (rz: rotation, dx, dy: translation, sxy: scale)
                             (Default: automatic best-guess initialisation.)
-        --rgb               Forces to use maximum 3 channels. (Use for RGBA.)
+        --bounds            Lower and upper bounds for the affine parameters.
+          [l1,u1...l4,u4]   (Default: [-pi,pi,-w/2,w/2,-h/2,h/2,0.8,1.2])
+        --steps <n_steps>   Number of steps per parameter during the gridsearch.
+        --tif               Forces to use tifffile.py for the input and output.
+        --show              Show the output.
         -v                  Verbose: report the evolution of the cost function.
     """
         )
