@@ -34,7 +34,7 @@ def downsample(img, factor, bounds_error=False, fill_value=0):
                           .reshape(nxx.shape).astype(np.uint8)
     return newimg
 
-ppmm = 16.83495/3.0
+ppmm = 16.83495/2.0
 slice = downsample(slice, factor=ppmm)
 fragment = downsample(fragment, factor=ppmm)
 block = downsample(block, factor=ppmm)
@@ -96,16 +96,14 @@ fragment_grad_ipol = RegularGridInterpolator((range(fh), range(fw)), colour_grad
                                      bounds_error=False, fill_value=np.array([0,0,0]))
 
 
-def transform_img(img, ipol, affine_params):
-    testimg = ipol(
-              transform(img, affine_params)).reshape(img.shape).astype(np.uint8)
-    return testimg
-
 # Define rigid-body transformer function
 # See https://en.wikipedia.org/wiki/Transformation_matrix#Affine_transformations
-def transform(img, affine_params):
+def transform(img, affine_params, refimg=None):
     """ Returns new x and y coordinates """
-    h, w, ch = img.shape
+    if refimg is not None:
+        h, w, ch = refimg.shape
+    else:
+        h, w, ch = img.shape
     rot_z, dx, dy, sx = affine_params
     sy = sx
     centre_y, centre_x = np.mean(np.vstack(np.where(np.sum(img, axis=2)!=0)).T,
@@ -122,6 +120,14 @@ def transform(img, affine_params):
     res = np.roll(res[:2, :].T, 1, axis=1)
     return res
 
+
+def transform_img(img, ipol, affine_params, refimg=None):
+    testimg = ipol(
+              transform(img, affine_params, refimg)).reshape(refimg.shape)\
+              .astype(np.uint8)
+    return testimg
+
+
 # Test transformer function
 """
 plt.imshow(transform_img(slice, slice_ipol, np.array([-pi,0,0,1,1])))
@@ -130,15 +136,19 @@ plt.show()
 
 # Define cost function
 def costfun(paramvect, slice_ipol, fragment_ipol, sg_ipol, fg_ipol, slice,
-            verbose=False):
+            refimg=None, verbose=False):
+    if refimg is not None:
+        h, w, ch = refimg.shape
+    else:
+        h, w, ch = slice.shape
     alpha = 1
-    xy_slice = transform(slice, paramvect)
-    yy, xx = np.meshgrid(range(sh), range(sw), indexing='ij')
+    xy_slice = transform(slice, paramvect, refimg)
+    yy, xx = np.meshgrid(range(h), range(w), indexing='ij')
     xy_fragment = np.vstack((yy.ravel(), xx.ravel())).T
-    lsqterm = np.sum((fragment_ipol(xy_fragment).reshape(slice.shape) -
-                   slice_ipol(xy_slice).reshape(slice.shape))**2)
-    regterm = np.sum((fg_ipol(xy_fragment).reshape(slice.shape) -
-                   sg_ipol(xy_slice).reshape(slice.shape))**2)
+    lsqterm = np.sum((fragment_ipol(xy_fragment).reshape((h,w,ch)) -
+                   slice_ipol(xy_slice).reshape((h,w,ch)))**2)
+    regterm = np.sum((fg_ipol(xy_fragment).reshape((h,w,ch)) -
+                   sg_ipol(xy_slice).reshape((h,w,ch)))**2)
     cost = lsqterm + alpha*regterm
     if verbose:
         print cost
@@ -161,17 +171,19 @@ gridpts = tuple([np.linspace(bnds[i][0], bnds[i][1], 5, True) for i in range(4)]
 grid = np.meshgrid(*gridpts)
 grid = np.vstack([grid[i].ravel() for i in range(len(grid))]).T
 #print np.any([np.all(grid[i,:] == np.array([-pi,0,0,1])) for i in range(grid.shape[0])])
+
 initial_costs = []
 print 'Calculating initial guess...'
 for x0 in grid:
     initial_costs.append(costfun(x0, slice_ipol, fragment_ipol, slice_grad_ipol,
-                                 fragment_grad_ipol, slice))
+                                 fragment_grad_ipol, slice, refimg=fragment))
 x0 = grid[np.argmin(np.vstack(initial_costs))]
 print x0
+
 print 'Optimizing...'
 opt = minimize(costfun, x0=x0, bounds=bnds,
                    args=(slice_ipol, fragment_ipol, slice_grad_ipol,
-                     fragment_grad_ipol, slice, True))
+                     fragment_grad_ipol, slice, fragment, True))
 """
 opt = basinhopping(costfun, x0=np.array([0, 0, 0, 1]),
                    minimizer_kwargs={'args': (slice_ipol, fragment_ipol, slice_grad_ipol,
@@ -180,16 +192,14 @@ opt = basinhopping(costfun, x0=np.array([0, 0, 0, 1]),
 print opt.x
 
 # Test results
-testimg = np.zeros_like(slice, dtype=np.uint8)
-testimg = slice_ipol(transform(slice, opt.x)).reshape(slice.shape)\
-          .astype(np.uint8)
+testimg = np.zeros_like(fragment, dtype=np.uint8)
+testimg = slice_ipol(transform(slice, opt.x, refimg=fragment))\
+          .reshape(fragment.shape).astype(np.uint8)
 plt.subplot(121)
 plt.imshow(testimg)
 plt.subplot(122)
 plt.imshow(fragment)
 plt.show()
 
-h = min(testimg.shape[0], fragment.shape[0])
-w = min(testimg.shape[1], fragment.shape[1])
-plt.imshow(testimg[:h,:w,:]-fragment[:h,:w,:])
+plt.imshow(testimg-fragment)
 plt.show()
