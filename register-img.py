@@ -402,6 +402,7 @@ def main():
         bnds = [[-pi, pi], [-w/2, w/2], [-h/2, h/2], [0.8, 1.2]]
 
     # Read grid search step count
+    steps = 5
     if argexist(CLFLAGS['steps']):
         if argexist(CLFLAGS['steps'], True):
             steps = subarg(CLFLAGS['steps'])[0]
