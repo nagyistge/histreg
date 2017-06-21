@@ -7,17 +7,20 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import tifffile as tiff
-from scipy.optimize import minimize
+from scipy.optimize import minimize, differential_evolution, basinhopping, brute
 from scipy.interpolate import RegularGridInterpolator
 from math import sin, cos, pi, floor, sqrt
 from fractions import Fraction
 from args import *
 import os
 from PIL import Image
+from skimage.color import rgb2grey
+from mutual_information import mutual_information
 
 CLFLAGS = {'ref': '--ref',
            'rgb': '--rgb',
            'apply': '--applyxfm',
+           'maskval': '--maskval',
            'initvals': '--initvals',
            'bounds': '--bounds',
            'steps': '--steps',
@@ -112,14 +115,14 @@ def get_affine_from_params(affine_params, orig_x=0, orig_y=0, factor=1):
     downscaling."""
     rot_z, dx, dy, sx = affine_params
     sy = sx
-    dx = factor*(dx - orig_x)
-    dy = factor*(dy - orig_y)
     affine = np.array([[sx * cos(rot_z), -sy * sin(rot_z),
-                        dx * sx * cos(rot_z) - dy * sy * sin(rot_z) +
-                        factor*orig_x],
+                        factor * (-orig_x) * sx * cos(rot_z) -
+                        factor * (-orig_y) * sy * sin(rot_z) +
+                        factor * dx],
                        [sx * sin(rot_z), sy * cos(rot_z),
-                        dx * sx * sin(rot_z) + dy * sy * cos(rot_z) +
-                        factor*orig_y],
+                        factor * (-orig_x) * sx * sin(rot_z) +
+                        factor * (-orig_y) * sy * cos(rot_z) +
+                        factor * dy],
                        [0, 0, 1]])
     return affine
 
@@ -198,7 +201,44 @@ def set_interpolators(img, refimg, gradients=False):
 
 
 def costfun(affine_params, img_ipol, refimg_ipol, img_grad_ipol=None,
-            refimg_grad_ipol=None, orig_x=0, orig_y=0, verbose=False):
+            refimg_grad_ipol=None, orig_x=0, orig_y=0, maskval=None,
+            verbose=False):
+    """Calculates the alignment penalty score (cost) between the input image and
+    the reference image given the transformation parameters.
+
+    The cost function measures the normalised mutual information."""
+
+    if verbose:
+        print affine_params
+    affine = get_affine_from_params(affine_params, orig_x, orig_y, 1)
+    yx_xfm = transform(img=img_ipol.values, affine=affine,
+                       refimg=refimg_ipol.values)
+    yy, xx = np.meshgrid(refimg_ipol.grid[0], refimg_ipol.grid[1],
+                         indexing='ij')
+    yx_ref = np.vstack((yy.ravel(), xx.ravel())).T
+    # Measure the area of the transformed input image. This will be a second
+    # normalisation factor for the normalised mutual information metric, so as
+    # to avoid the otherwise inevitable inflation of the image.
+    if maskval is not None:
+        roi_img_yx = np.where((img_ipol(yx_xfm) != maskval).any(axis=1))[0]
+        total = roi_img_yx.size
+    else:
+        total = 1
+    h, w, ch = extract_shape(refimg_ipol.values)
+    cost = -mutual_information(rgb2grey(img_ipol(yx_xfm).reshape((h, w, ch))),
+                              rgb2grey(refimg_ipol(yx_ref).reshape((h, w, ch))))/total
+    #plt.imshow(rgb2grey(img_ipol(yx_xfm).reshape((h, w, ch))), cmap='gray')
+    #plt.show()
+
+    if verbose:
+        print cost
+
+    return cost
+
+
+def costfun_lsq(affine_params, img_ipol, refimg_ipol, img_grad_ipol=None,
+            refimg_grad_ipol=None, orig_x=0, orig_y=0, maskval=None,
+            verbose=False):
     """Calculates the alignment penalty score (cost) between the input image and
     the reference image given the transformation parameters.
 
@@ -216,11 +256,24 @@ def costfun(affine_params, img_ipol, refimg_ipol, img_grad_ipol=None,
     yx_ref = np.vstack((yy.ravel(), xx.ravel())).T
 
     h, w, ch = extract_shape(refimg_ipol.values)
-    lsqterm = np.sum((refimg_ipol(yx_ref).reshape((h, w, ch)) -
-                      img_ipol(yx_xfm).reshape((h, w, ch))) ** 2)
-    regterm = np.sum((refimg_grad_ipol(yx_ref).reshape((h, w, ch)) -
-                      img_grad_ipol(yx_xfm).reshape((h, w, ch))) ** 2)
-    cost = lsqterm + alpha * regterm
+    if maskval is not None:
+        #roi_img_yx = np.where((img_ipol(yx_xfm) != maskval).any(axis=1))[0]
+        roi_ref_yx = np.where((refimg_ipol(yx_ref) != maskval).any(axis=1))[0]
+        #im = img_ipol(yx_xfm).astype(np.uint8)
+        #im[roi_img_yx, :] = np.array([255,255,255])
+        #print affine_params
+        #plt.imshow(im.reshape(refimg_ipol.values.shape))
+        #plt.show()
+        lsqterm = np.sum((refimg_ipol(yx_ref)[roi_ref_yx] -
+                  img_ipol(yx_xfm)[roi_ref_yx]) ** 2)
+        regterm = np.sum((refimg_grad_ipol(yx_ref)[roi_ref_yx] -
+                  img_grad_ipol(yx_xfm)[roi_ref_yx]) ** 2)
+    else:
+        lsqterm = np.sum((refimg_ipol(yx_ref).reshape((h, w, ch)) -
+                          img_ipol(yx_xfm).reshape((h, w, ch))) ** 2)
+        regterm = np.sum((refimg_grad_ipol(yx_ref).reshape((h, w, ch)) -
+                          img_grad_ipol(yx_xfm).reshape((h, w, ch))) ** 2)
+    cost = lsqterm #+ alpha * regterm
     if verbose:
         print cost
 
@@ -228,7 +281,7 @@ def costfun(affine_params, img_ipol, refimg_ipol, img_grad_ipol=None,
 
 
 def perform_registration(img, refimg, affine_param_bounds, init_steps=5,
-                         dscale=1, initvals=None, verbose=True):
+                         dscale=1, initvals=None, maskval=None, verbose=True):
     """Perform registration given the input and the reference image plus the
     bounds on the affine parameters and the number of initialisation steps for
     each affine parameter."""
@@ -269,7 +322,7 @@ def perform_registration(img, refimg, affine_param_bounds, init_steps=5,
                                          img_grad_ipol=ipols[2],
                                          refimg_grad_ipol=ipols[3],
                                          orig_x=orig_x, orig_y=orig_y,
-                                         verbose=False))
+                                         maskval=maskval, verbose=False))
         x0 = grid[np.argmin(np.vstack(initial_costs))]
         print 'Best guess for initialisation: ', x0
     else:
@@ -280,10 +333,27 @@ def perform_registration(img, refimg, affine_param_bounds, init_steps=5,
 
     # Perform registration by minimising the cost function
     print 'Optimizing...'
+    print 'Scaled param bounds:', affine_param_bounds
+    """
     opt = minimize(costfun, x0=x0, bounds=affine_param_bounds,
                    args=(ipols[0], ipols[1], ipols[2], ipols[3], orig_x, orig_y,
-                         verbose))
+                         maskval, verbose), method='TNC', options={'eps': 0.01,
+                                                                   'scale': [1,10,10,1]},
+                   jac=False)
+    """
+    opt = differential_evolution(costfun, bounds=affine_param_bounds,
+                   args=(ipols[0], ipols[1], ipols[2], ipols[3], orig_x, orig_y,
+                         maskval, verbose), strategy='best2exp')
 
+    """
+    opt = basinhopping(costfun, x0=x0, bounds=affine_param_bounds,
+                   args=(ipols[0], ipols[1], ipols[2], ipols[3], orig_x, orig_y,
+                         maskval, verbose))
+    
+    opt = brute(costfun, ranges=affine_param_bounds,
+                   args=(ipols[0], ipols[1], ipols[2], ipols[3], orig_x, orig_y,
+                         maskval, verbose), Ns=20)
+    """
     # Generate output: transformed image and transformation matrix
     print opt.x
     omat = get_affine_from_params(opt.x, orig_x=orig_x, orig_y=orig_y,
@@ -369,12 +439,20 @@ def main():
                 exit()
             try:
                 # Strip brackets
-                initvals[0] = initvals[0][1:]
-                initvals[-1] = initvals[-1][:-1]
+                if not str(initvals[0][0]).isdigit():
+                    initvals[0] = initvals[0][1:]
+                if not str(initvals[-1][-1]).isdigit():
+                    initvals[-1] = initvals[-1][:-1]
                 initvals = np.array([float(val) for val in initvals])
             except:
                 print ('Invalid affine parameters for initialisation.')
                 exit()
+            # The user-provided initial conditions must never be out of the
+            # deafult bounds.
+            if not argexist(CLFLAGS['bounds'], True):
+                bnds = [[-pi, pi], [initvals[1]*0.5, initvals[1]*1.5],
+                        [initvals[2]*0.5, initvals[2]*1.5],
+                        [initvals[3]*0.9, initvals[3]*1.1]]
         else:
             print ('Initial affine parameters are not specified.')
             exit()
@@ -397,9 +475,12 @@ def main():
         else:
             print ('Invalid bounds for initial parameter search.')
             exit()
-    else:
+    # Don't override the bounds that have been adapted to the provided initvals
+    elif not argexist(CLFLAGS['initvals'], True):
         h, w, ch = extract_shape(img)
         bnds = [[-pi, pi], [-w/2, w/2], [-h/2, h/2], [0.8, 1.2]]
+    else:
+        pass
 
     # Read grid search step count
     steps = 5
@@ -413,6 +494,31 @@ def main():
                 exit()
         else:
             print ('Invalid number of steps for initial grid search.')
+            exit()
+
+    # Read mask value
+    maskval = None
+    if argexist(CLFLAGS['maskval']):
+        if argexist(CLFLAGS['maskval'], True):
+            maskval = subarg(CLFLAGS['maskval'])
+            h, w, ch = extract_shape(img)
+            if len(maskval) == ch:
+                # Strip brackets
+                if not str(maskval[0][0]).isdigit():
+                    maskval[0] = maskval[0][1:]
+                if not str(maskval[-1][-1]).isdigit():
+                    maskval[-1] = maskval[-1][:-1]
+                try:
+                    maskval = np.array([float(val) for val in maskval])
+                except:
+                    print ('Invalid mask value.')
+                    exit()
+            else:
+                print ('Mask value dimension must match the number of'
+                       ' channels.')
+                exit()
+        else:
+            print ('Invalid mask value.')
             exit()
 
     # Read output name
@@ -438,7 +544,8 @@ def main():
         outimg, omat = perform_registration(img, refimg,
                                             affine_param_bounds=bnds,
                                             init_steps=steps, dscale=factor,
-                                            initvals=initvals, verbose=verbose)
+                                            initvals=initvals, maskval=maskval,
+                                            verbose=verbose)
 
         if argexist(CLFLAGS['show']):
             print ('Showing the alignment...')
@@ -517,6 +624,7 @@ if __name__ == "__main__":
                             (Default: automatic best-guess initialisation.)
         --bounds            Lower and upper bounds for the affine parameters.
           [l1,u1...l4,u4]   (Default: [-pi,pi,-w/2,w/2,-h/2,h/2,0.8,1.2])
+        --maskval [v1...]   Masked input pixels are excluded from the cost.
         --steps <n_steps>   Number of steps per parameter during the gridsearch.
         --tif               Forces to use tifffile.py for the input and output.
         --show              Show the output.
