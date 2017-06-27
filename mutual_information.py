@@ -27,7 +27,7 @@
 import numpy
 
 
-def mutual_information(i1, i2, bins=256):
+def mutual_information(i1, i2, bins=256, normalised=True):
     r"""
     Computes the mutual information (MI) (a measure of entropy) between two images.
 
@@ -101,7 +101,11 @@ def mutual_information(i1, i2, bins=256):
     i2_entropy = __entropy(i2_hist)
 
     # compute and return the mutual information distance
-    return i1_entropy + i2_entropy - i1i2_entropy
+    if normalised:
+        return (i1_entropy + i2_entropy - i1i2_entropy) \
+                / float(i1_entropy + i2_entropy)
+    else:
+        return i1_entropy + i2_entropy - i1i2_entropy
 
 
 def __range(a, bins):
