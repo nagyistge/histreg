@@ -13,6 +13,7 @@ from PIL import Image
 from sklearn.cluster import KMeans
 from scipy.ndimage.filters import median_filter
 from skimage import color
+from skimage.measure import label, regionprops
 
 # Command-line argument flags
 CLFLAGS = {'tiff': '--tif',
@@ -28,6 +29,7 @@ CLFLAGS = {'tiff': '--tif',
            'invert': '--inv',
            'corner': '--corner',
            'segval': '-s',
+           'area': '--area',
            'format': '-f'}
 
 #  Layer identifiers
@@ -113,6 +115,15 @@ def main():
 
     except:
         print ('Invalid segmentation label specification.')
+        err = err + 1
+        exit()
+
+    # Read area limit
+    area_limit = None
+    try:
+        area_limit = int(subarg(CLFLAGS['area'])[0])
+    except:
+        print ('Invalid area limit.')
         err = err + 1
         exit()
 
@@ -254,21 +265,41 @@ def main():
             mask = median_filter(mask, medkernel)
         if argexist(CLFLAGS['corner']):
             if corner == 0:
-                watchpoint = mask[0,0]
+                yx = (0, 0)
             elif corner == 1:
-                watchpoint = mask[0, w]
+                yx = (0, w)
             elif corner == 2:
-                watchpoint = mask[h, 0]
+                yx = (h, 0)
             else:
-                watchpoint = mask[h, w]
+                yx = (h, w)
+            watchpoint = mask[yx]
             if not watchpoint == 0:
-                current_label = mask[0,0]
+                current_label = mask[yx]
                 tmplabel = np.max(mask) + 1
                 mask[mask == current_label] = tmplabel
                 mask[mask == 0] = current_label
                 mask[mask == tmplabel] = 0
-        segmentation = np.copy(img)
-        segmentation[np.in1d(mask, SEGVALS).reshape(mask.shape)] = 0
+
+        # Area filtering
+        if area_limit is not None:
+            cleanmask = np.copy(mask)
+            bg_val = np.max(mask) + 1
+            cleanmask[
+                np.in1d(mask, SEGVALS).reshape(mask.shape)] = bg_val
+            cleanmask[cleanmask != bg_val] = bg_val + 1
+            labels = label(cleanmask, neighbors=4, background=bg_val)
+            regions = regionprops(labels)
+            cleanmask[np.in1d(labels, np.asarray(
+                [region['label'] for region in regions if
+                 region['area'] < area_limit])).reshape(
+                cleanmask.shape)] = \
+                bg_val
+            segmentation = np.copy(img)
+            segmentation[(cleanmask == bg_val).reshape(cleanmask.shape)] = 0
+            mask[cleanmask == bg_val] = SEGVALS[0]
+        else:
+            segmentation = np.copy(img)
+            segmentation[np.in1d(mask, SEGVALS).reshape(mask.shape)] = 0
 
         if argexist(CLFLAGS['save']):
             fn = os.path.join(fpath, fname[:-4])
@@ -367,6 +398,8 @@ if __name__ == '__main__':
                                 zero. (0: Top-left 1: top-right, 2: bottom-left
                                 3: bottom-right) (default: off, 0 when on)
             -s <s1,s2...sn>     Mask values used for segmentation (default: 0)
+            --area <area>       Erases standalone parts under the area limit.
+                                (default: off)
             --show              Show output on screen. (default: off)
             --save              Save output to file. (default: off)
             -f      <format>    Output file format. See above what is supported.
